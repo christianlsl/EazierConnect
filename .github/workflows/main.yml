@@ -18,7 +18,6 @@ jobs:
   build:
     strategy:
       matrix:
-        # 只保留Windows和Linux的amd64架构
         goos: [windows, linux]
         goarch: [amd64]
       fail-fast: false
@@ -28,7 +27,6 @@ jobs:
       GOOS: ${{ matrix.goos }}
       GOARCH: ${{ matrix.goarch }}
       CGO_ENABLED: 0
-      # 获取版本信息（发布时使用tag，否则使用commit哈希）
       VERSION: ${{ github.event.release.tag_name || github.sha }}
 
     steps:
@@ -38,7 +36,6 @@ jobs:
       - name: Show workflow information
         id: get_filename
         run: |
-          # 构建资产名称，仅包含操作系统和架构
           export _NAME="${GOOS}-${GOARCH}"
           echo "构建信息: GOOS=${GOOS}, GOARCH=${GOARCH}, 资产名称=${_NAME}"
           echo "::set-output name=ASSET_NAME::${_NAME}"
@@ -47,7 +44,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version: ^1.19
+          go-version: ^1.21  # 升级到更高的Go版本（gvisor推荐1.20+）
           cache: true
 
       - name: Cache Go modules
@@ -63,12 +60,13 @@ jobs:
       - name: Get project dependencies
         run: go mod download && go mod verify
 
-      - name: Build
+      - name: Build with gvisor tags
         run: |
           mkdir -p build_assets
-          # 注入版本信息到二进制文件
+          # 添加gvisor所需的构建标签，强制启用兼容模式
           go build -v -o build_assets/EasierConnect \
             -trimpath \
+            -tags "gvisor,go1.21" \  # 根据Go版本添加对应的标签
             -ldflags "-s -w -buildid= -X main.version=${VERSION} -X main.commit=${GITHUB_SHA::8}" \
             .
 
@@ -83,7 +81,6 @@ jobs:
           pushd build_assets || exit 1
           zip -9vr ../EasierConnect-${ASSET_NAME}.zip .
           popd || exit 1
-          # 显示打包内容
           unzip -l EasierConnect-${ASSET_NAME}.zip
 
       - name: Upload release binary
@@ -91,7 +88,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          # 使用--clobber覆盖已存在的资产
           gh release upload ${{ github.event.release.tag_name }} \
             EasierConnect-${{ steps.get_filename.outputs.ASSET_NAME }}.zip \
             --clobber \
