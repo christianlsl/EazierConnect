@@ -18,99 +18,81 @@ jobs:
   build:
     strategy:
       matrix:
-        # Include amd64 on all platforms.
-        goos: [windows, linux, darwin]
-        goarch: [amd64, 386]
-        exclude:
-          # Exclude i386 on darwin.
-          - goarch: 386
-            goos: darwin
-        include:
-          # BEGIN Linux ARM 5 6 7
-          - goos: linux
-            goarch: arm
-            goarm: 7
-          - goos: linux
-            goarch: arm
-            goarm: 6
-          - goos: linux
-            goarch: arm
-            goarm: 5
-          # END Linux ARM 5 6 7
-          # BEGIN Windows ARM 7
-          - goos: windows
-            goarch: arm
-            goarm: 7
-          # END Windows ARM 7
-          # BEGIN Other architectures
-          - goos: darwin
-            goarch: arm64
-          - goos: linux
-            goarch: arm64
-          - goos: linux
-            goarch: riscv64
-          - goos: windows
-            goarch: arm64
-          - goos: android
-            goarch: arm64
-          # BEGIN MIPS
-          - goos: linux
-            goarch: mips64
-          - goos: linux
-            goarch: mips64le
-          - goos: linux
-            goarch: mipsle
-          - goos: linux
-            goarch: mips
-          # END MIPS
-          # END Other architectures
+        # 只保留Windows和Linux的amd64架构
+        goos: [windows, linux]
+        goarch: [amd64]
       fail-fast: false
 
     runs-on: ubuntu-latest
     env:
       GOOS: ${{ matrix.goos }}
       GOARCH: ${{ matrix.goarch }}
-      GOARM: ${{ matrix.goarm }}
       CGO_ENABLED: 0
+      # 获取版本信息（发布时使用tag，否则使用commit哈希）
+      VERSION: ${{ github.event.release.tag_name || github.sha }}
 
     steps:
       - name: Checkout codebase
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Show workflow information
         id: get_filename
         run: |
-          export _NAME=$GOOS-$GOARCH$GOARM
-          echo "GOOS: $GOOS, GOARCH: $GOARCH, GOARM: $GOARM, RELEASE_NAME: $_NAME"
-          echo "::set-output name=ASSET_NAME::$_NAME"
-          echo "ASSET_NAME=$_NAME" >> $GITHUB_ENV
+          # 构建资产名称，仅包含操作系统和架构
+          export _NAME="${GOOS}-${GOARCH}"
+          echo "构建信息: GOOS=${GOOS}, GOARCH=${GOARCH}, 资产名称=${_NAME}"
+          echo "::set-output name=ASSET_NAME::${_NAME}"
+          echo "ASSET_NAME=${_NAME}" >> $GITHUB_ENV
+
       - name: Set up Go
-        uses: actions/setup-go@v3
+        uses: actions/setup-go@v4
         with:
           go-version: ^1.19
+          cache: true
+
+      - name: Cache Go modules
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
 
       - name: Get project dependencies
-        run: go mod download
+        run: go mod download && go mod verify
 
       - name: Build
         run: |
           mkdir -p build_assets
-          go build -v -o build_assets/EasierConnect -trimpath -ldflags "-s -w -buildid=" .
-      - name: Rename Windows EasierConnect
+          # 注入版本信息到二进制文件
+          go build -v -o build_assets/EasierConnect \
+            -trimpath \
+            -ldflags "-s -w -buildid= -X main.version=${VERSION} -X main.commit=${GITHUB_SHA::8}" \
+            .
+
+      - name: Rename Windows executable
         if: matrix.goos == 'windows'
         run: |
           cd ./build_assets || exit 1
           mv EasierConnect EasierConnect.exe
+
       - name: Create ZIP archive
         run: |
           pushd build_assets || exit 1
-          zip -9vr ../EasierConnect-$ASSET_NAME.zip .
+          zip -9vr ../EasierConnect-${ASSET_NAME}.zip .
           popd || exit 1
-      
+          # 显示打包内容
+          unzip -l EasierConnect-${ASSET_NAME}.zip
+
       - name: Upload release binary
         if: github.event_name == 'release'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          gh release upload ${{ github.event.release.tag_name }} EasierConnect-${{ steps.get_filename.outputs.ASSET_NAME }}.zip
-
+          # 使用--clobber覆盖已存在的资产
+          gh release upload ${{ github.event.release.tag_name }} \
+            EasierConnect-${{ steps.get_filename.outputs.ASSET_NAME }}.zip \
+            --clobber \
+            --name "EasierConnect-${{ steps.get_filename.outputs.ASSET_NAME }}.zip"
